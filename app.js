@@ -7,6 +7,7 @@
   let currentMarkupId = null;
   let flip = false;
   let lastLine = null; // { x1, y1, x2, y2 } in mm
+  let preDrawMarkupIds = new Set();
 
   const els = {};
 
@@ -14,6 +15,7 @@
 
   function cacheEls() {
     els.drawBtn = $("#drawBtn");
+    els.useDrawnBtn = $("#useDrawnBtn");
     els.cancelDrawBtn = $("#cancelDrawBtn");
     els.x1 = $("#x1");
     els.y1 = $("#y1");
@@ -92,13 +94,18 @@
     if (!API || drawing) return;
     drawing = true;
     els.drawBtn.disabled = true;
+    els.useDrawnBtn.style.display = "";
     els.cancelDrawBtn.style.display = "";
-    setStatus("Click two points in the 3D view to draw the section line\u2026");
+    setStatus("Draw two points, click \u201cDone\u201d in the top toolbar, then click \u201cUse drawn line\u201d.");
     try {
+      // Remember what line markups already exist so we can spot the new one.
+      const existing = await API.markup.getLineMarkups().catch(() => []);
+      preDrawMarkupIds = new Set((existing || []).map((m) => m.id));
+
       // Put the user in plan view so the line is naturally drawn in X/Y.
       await API.viewer.setCamera("top");
       await API.viewer.activateTool("lineMarkup", {
-        instruction: "Click two points to define the cross-section line.",
+        instruction: "Click two points to define the cross-section line, then click Done.",
       });
     } catch (err) {
       console.error(err);
@@ -110,11 +117,46 @@
   async function stopDraw() {
     drawing = false;
     els.drawBtn.disabled = false;
+    els.useDrawnBtn.style.display = "none";
     els.cancelDrawBtn.style.display = "none";
     try {
       await API.viewer.activateTool("reset");
     } catch (err) {
       console.error(err);
+    }
+  }
+
+  async function useDrawnLine() {
+    if (!API) return;
+    try {
+      const lines = await API.markup.getLineMarkups();
+      const newLine = (lines || []).find((l) => !preDrawMarkupIds.has(l.id))
+        || (lines && lines[lines.length - 1]);
+
+      if (!newLine || !newLine.start || !newLine.end) {
+        setStatus("No finished line found yet \u2014 draw two points and click Done first.", true);
+        return;
+      }
+
+      currentMarkupId = typeof newLine.id === "number" ? newLine.id : null;
+
+      const x1 = newLine.start.positionX;
+      const y1 = newLine.start.positionY;
+      const x2 = newLine.end.positionX;
+      const y2 = newLine.end.positionY;
+      // Z is intentionally discarded: the drawn line always defines a level
+      // cut, regardless of what elevation was clicked on.
+
+      els.x1.value = Math.round(x1);
+      els.y1.value = Math.round(y1);
+      els.x2.value = Math.round(x2);
+      els.y2.value = Math.round(y2);
+
+      await stopDraw();
+      await applySection(x1, y1, x2, y2);
+    } catch (err) {
+      console.error(err);
+      setStatus("Failed to read the drawn line.", true);
     }
   }
 
@@ -135,8 +177,6 @@
     const y1 = start.positionY;
     const x2 = end.positionX;
     const y2 = end.positionY;
-    // Z is intentionally discarded: the drawn line always defines a level
-    // (Z = 0 reference) cut, regardless of what elevation was clicked on.
 
     els.x1.value = Math.round(x1);
     els.y1.value = Math.round(y1);
@@ -149,6 +189,7 @@
 
   function wireControls() {
     els.drawBtn.addEventListener("click", startDraw);
+    els.useDrawnBtn.addEventListener("click", useDrawnLine);
     els.cancelDrawBtn.addEventListener("click", stopDraw);
 
     els.applyManualBtn.addEventListener("click", () => {
@@ -180,6 +221,7 @@
         currentPlaneId = null;
         currentMarkupId = null;
         lastLine = null;
+        preDrawMarkupIds = new Set();
         flip = false;
         els.flipBtn.classList.remove("active");
         els.flipBtn.disabled = true;
