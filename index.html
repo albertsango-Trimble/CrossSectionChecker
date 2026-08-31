@@ -133,6 +133,21 @@
     color: var(--muted);
   }
   .range-inputs input { width: 62px; }
+  .manual-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 10px;
+    margin-top: 8px;
+  }
+  .manual-grid label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--muted);
+    gap: 6px;
+  }
+  .manual-grid input { flex: 1; min-width: 0; }
   #status {
     font-size: 11px;
     color: var(--muted);
@@ -148,62 +163,41 @@
   <h1>📐 Cross Section Viewer</h1>
 
   <div class="card">
-    <div class="plane-row" data-axis="X">
-      <span class="plane-label"><span class="axis-dot axis-x"></span>X</span>
-      <div class="slider-wrap">
-        <input type="range" class="pos-slider" data-axis="X" min="-10000" max="10000" step="10" value="0" disabled />
-        <input type="number" class="pos-number" data-axis="X" step="10" value="0" disabled />
-      </div>
-      <div class="row-controls">
-        <button class="toggle-btn flip-btn" data-axis="X" title="Flip direction" disabled>⇄</button>
-        <button class="toggle-btn enable-btn" data-axis="X" title="Enable X section">X</button>
+    <div class="btn-row">
+      <button class="btn" id="drawBtn">✏️ Draw section line</button>
+      <button class="btn secondary" id="cancelDrawBtn" style="display:none;">Cancel</button>
+    </div>
+    <div class="hint" style="margin-top:8px;">Click "Draw section line", then click two points in the 3D view to define the cut line in plan (X/Y). Elevation is ignored — the cut is always a vertical plane through that line, so it shows everything crossing it at every height.</div>
+
+    <div class="field-row" style="margin-top:12px;">
+      <span style="font-weight:600; color:var(--text);">Manual entry (mm)</span>
+    </div>
+    <div class="manual-grid">
+      <label>X1 <input type="number" id="x1" step="10" value="0" /></label>
+      <label>Y1 <input type="number" id="y1" step="10" value="0" /></label>
+      <label>X2 <input type="number" id="x2" step="10" value="1000" /></label>
+      <label>Y2 <input type="number" id="y2" step="10" value="0" /></label>
+    </div>
+    <div class="btn-row">
+      <button class="btn secondary" id="applyManualBtn">Create from coordinates</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="plane-row">
+      <span class="plane-label">Section</span>
+      <div class="row-controls" style="margin-left:auto;">
+        <button class="toggle-btn" id="flipBtn" title="Flip cut side" disabled>⇄</button>
       </div>
     </div>
-
-    <div class="plane-row" data-axis="Y">
-      <span class="plane-label"><span class="axis-dot axis-y"></span>Y</span>
-      <div class="slider-wrap">
-        <input type="range" class="pos-slider" data-axis="Y" min="-10000" max="10000" step="10" value="0" disabled />
-        <input type="number" class="pos-number" data-axis="Y" step="10" value="0" disabled />
-      </div>
-      <div class="row-controls">
-        <button class="toggle-btn flip-btn" data-axis="Y" title="Flip direction" disabled>⇄</button>
-        <button class="toggle-btn enable-btn" data-axis="Y" title="Enable Y section">Y</button>
-      </div>
-    </div>
-
-    <div class="plane-row" data-axis="Z">
-      <span class="plane-label"><span class="axis-dot axis-z"></span>Z</span>
-      <div class="slider-wrap">
-        <input type="range" class="pos-slider" data-axis="Z" min="-10000" max="10000" step="10" value="0" disabled />
-        <input type="number" class="pos-number" data-axis="Z" step="10" value="0" disabled />
-      </div>
-      <div class="row-controls">
-        <button class="toggle-btn flip-btn" data-axis="Z" title="Flip direction" disabled>⇄</button>
-        <button class="toggle-btn enable-btn" data-axis="Z" title="Enable Z section">Z</button>
-      </div>
-    </div>
-
     <div class="field-row">
       <label><input type="checkbox" id="showHandles" checked /> Show plane handles</label>
     </div>
-
-    <div class="range-inputs">
-      <span>Range (mm):</span>
-      <input type="number" id="rangeMin" value="-10000" step="100" />
-      <span>to</span>
-      <input type="number" id="rangeMax" value="10000" step="100" />
-      <button class="btn secondary" id="fitBtn" style="margin-left:auto; padding:4px 8px;">Fit to model</button>
-    </div>
-
     <div class="btn-row">
-      <button class="btn" id="clearBtn">Clear all sections</button>
+      <button class="btn" id="clearBtn">Clear section</button>
     </div>
-
     <div id="status"></div>
   </div>
-
-  <div class="hint">Toggle X / Y / Z to add an axis-aligned cutting plane. Drag the slider or type a value (millimeters from the model origin) to move it through the model. Use ⇄ to flip which side is cut away.</div>
 </div>
 
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
