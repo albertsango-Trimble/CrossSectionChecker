@@ -9,10 +9,14 @@ independent of the built-in section box tool.
 - Click **"Draw section line"**, then click two points directly in the 3D
   view to define a cutting line in plan (X/Y). The camera automatically
   snaps to a top-down view first so you're drawing in true plan.
-- Whatever elevation (Z) the clicks land on is discarded — the cut is
-  always a perfectly vertical plane through that line, so it shows
-  everything the line crosses at every height, like a standard building
-  section.
+- Click **Done** in Trimble Connect's own top toolbar once you've placed
+  both points (this is how Trimble Connect's line-drawing tool commits a
+  line — the extension can't skip this step).
+- Click **"Use drawn line"** in the extension panel to fetch that finished
+  line and turn it into a section. Whatever elevation (Z) the two clicks
+  landed on is discarded — the cut is always a perfectly vertical plane
+  through the line, so it shows everything the line crosses at every
+  height, like a standard building section.
 - A manual entry form (X1/Y1/X2/Y2 in millimeters) is available as a
   fallback if you'd rather type exact coordinates than click.
 - **⇄** flips which side of the line gets cut away.
@@ -29,10 +33,17 @@ IIFE bundle and talks to the Workspace API:
 - `viewer.activateTool("lineMarkup", options)` — activates Trimble
   Connect's built-in line-drawing tool so the user can click two points
   directly in the 3D view.
-- The `viewer.onMarkupChanged` event fires when the line is completed,
-  delivering a `LineMarkup` with `start`/`end` points (`positionX/Y/Z` in
-  mm). Only the X/Y coordinates are used — Z is intentionally ignored so
-  the cut is always level regardless of what surface was clicked.
+- `markup.getLineMarkups()` — called once when drawing starts (to record
+  existing line ids) and again when the user clicks "Use drawn line", so
+  the extension can pick out the newly finished line by id. This is the
+  primary, reliable path, since it doesn't depend on any event firing.
+- `viewer.onMarkupChanged` is also wired up as a bonus fast-path: if it
+  does fire with a completed `lineMarkup`, the extension applies the
+  section immediately without needing "Use drawn line" — but the manual
+  button means the tool still works even if that event isn't delivered.
+- Only the X/Y coordinates of the line's `start`/`end` are used — Z is
+  intentionally ignored so the cut is always level regardless of what
+  surface was clicked.
 - From the two (x, y) points, the extension computes a horizontal unit
   normal perpendicular to the line (`directionZ` is always 0, keeping the
   plane vertical) and calls `viewer.addSectionPlane(plane)` with that
