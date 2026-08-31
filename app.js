@@ -1,34 +1,27 @@
 (() => {
   "use strict";
 
-  const AXES = ["X", "Y", "Z"];
-
-  const state = {
-    X: { enabled: false, pos: 0, flip: false, id: null },
-    Y: { enabled: false, pos: 0, flip: false, id: null },
-    Z: { enabled: false, pos: 0, flip: false, id: null },
-  };
-
   let API = null;
+  let drawing = false;
+  let currentPlaneId = null;
+  let currentMarkupId = null;
+  let flip = false;
+  let lastLine = null; // { x1, y1, x2, y2 } in mm
+
   const els = {};
-  let debounceTimers = {};
 
   function $(sel) { return document.querySelector(sel); }
-  function $all(sel) { return Array.from(document.querySelectorAll(sel)); }
 
   function cacheEls() {
-    AXES.forEach((axis) => {
-      els[axis] = {
-        slider: $(`.pos-slider[data-axis="${axis}"]`),
-        number: $(`.pos-number[data-axis="${axis}"]`),
-        flipBtn: $(`.flip-btn[data-axis="${axis}"]`),
-        enableBtn: $(`.enable-btn[data-axis="${axis}"]`),
-      };
-    });
+    els.drawBtn = $("#drawBtn");
+    els.cancelDrawBtn = $("#cancelDrawBtn");
+    els.x1 = $("#x1");
+    els.y1 = $("#y1");
+    els.x2 = $("#x2");
+    els.y2 = $("#y2");
+    els.applyManualBtn = $("#applyManualBtn");
+    els.flipBtn = $("#flipBtn");
     els.showHandles = $("#showHandles");
-    els.rangeMin = $("#rangeMin");
-    els.rangeMax = $("#rangeMax");
-    els.fitBtn = $("#fitBtn");
     els.clearBtn = $("#clearBtn");
     els.status = $("#status");
   }
@@ -38,218 +31,178 @@
     els.status.classList.toggle("error", !!isError);
   }
 
-  function buildSectionPlane(axis) {
-    const s = state[axis];
-    const dir = s.flip ? -1 : 1;
-    const plane = {
-      directionX: axis === "X" ? dir : 0,
-      directionY: axis === "Y" ? dir : 0,
-      directionZ: axis === "Z" ? dir : 0,
-      positionX: axis === "X" ? s.pos : 0,
-      positionY: axis === "Y" ? s.pos : 0,
-      positionZ: axis === "Z" ? s.pos : 0,
+  function buildVerticalPlane(x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (!len || Number.isNaN(len)) return null;
+
+    // Perpendicular, horizontal normal (plane is vertical: no Z component).
+    let nx = -dy / len;
+    let ny = dx / len;
+    if (flip) {
+      nx = -nx;
+      ny = -ny;
+    }
+
+    const midX = (x1 + x2) / 2;
+    const midY = (y1 + y2) / 2;
+
+    return {
+      directionX: nx,
+      directionY: ny,
+      directionZ: 0,
+      positionX: midX,
+      positionY: midY,
+      positionZ: 0, // elevation is irrelevant to a vertical plane's orientation
       controlsVisible: !!els.showHandles.checked,
     };
-    return plane;
   }
 
-  async function applyPlane(axis) {
-    if (!API) return;
-    const s = state[axis];
+  async function applySection(x1, y1, x2, y2) {
+    const plane = buildVerticalPlane(x1, y1, x2, y2);
+    if (!plane) {
+      setStatus("The two points are the same \u2014 can't define a line.", true);
+      return;
+    }
     try {
-      if (s.id !== null) {
-        await API.viewer.removeSectionPlanes([s.id]);
-        s.id = null;
+      if (currentPlaneId !== null) {
+        await API.viewer.removeSectionPlanes([currentPlaneId]);
+        currentPlaneId = null;
       }
-      if (s.enabled) {
-        const added = await API.viewer.addSectionPlane(buildSectionPlane(axis));
-        if (Array.isArray(added) && added.length && typeof added[0].id === "number") {
-          s.id = added[0].id;
-        }
+      const added = await API.viewer.addSectionPlane(plane);
+      if (Array.isArray(added) && added.length && typeof added[0].id === "number") {
+        currentPlaneId = added[0].id;
       }
-      setStatus("");
+      lastLine = { x1, y1, x2, y2 };
+      els.flipBtn.disabled = false;
+      setStatus("Section applied.");
     } catch (err) {
       console.error(err);
-      setStatus(`Failed to update ${axis} section plane.`, true);
+      setStatus("Failed to create the section plane.", true);
     }
   }
 
-  function applyAllVisibility() {
-    AXES.forEach((axis) => {
-      if (state[axis].enabled) applyPlane(axis);
-    });
+  async function reapplyCurrent() {
+    if (!lastLine) return;
+    await applySection(lastLine.x1, lastLine.y1, lastLine.x2, lastLine.y2);
   }
 
-  function debounced(key, fn, wait = 60) {
-    clearTimeout(debounceTimers[key]);
-    debounceTimers[key] = setTimeout(fn, wait);
+  async function startDraw() {
+    if (!API || drawing) return;
+    drawing = true;
+    els.drawBtn.disabled = true;
+    els.cancelDrawBtn.style.display = "";
+    setStatus("Click two points in the 3D view to draw the section line\u2026");
+    try {
+      // Put the user in plan view so the line is naturally drawn in X/Y.
+      await API.viewer.setCamera("top");
+      await API.viewer.activateTool("lineMarkup", {
+        instruction: "Click two points to define the cross-section line.",
+      });
+    } catch (err) {
+      console.error(err);
+      setStatus("Could not activate the line drawing tool.", true);
+      await stopDraw();
+    }
   }
 
-  function setUIEnabled(axis, enabled) {
-    els[axis].slider.disabled = !enabled;
-    els[axis].number.disabled = !enabled;
-    els[axis].flipBtn.disabled = !enabled;
-    els[axis].enableBtn.classList.toggle("active", enabled);
+  async function stopDraw() {
+    drawing = false;
+    els.drawBtn.disabled = false;
+    els.cancelDrawBtn.style.display = "none";
+    try {
+      await API.viewer.activateTool("reset");
+    } catch (err) {
+      console.error(err);
+    }
   }
 
-  function wireAxis(axis) {
-    const { slider, number, flipBtn, enableBtn } = els[axis];
+  async function onMarkupChanged(eventArg) {
+    if (!drawing) return;
+    // eventArg is a MarkupChangedArgument; the actual payload is in .data
+    const update = eventArg && eventArg.data;
+    if (!update || update.markupType !== "lineMarkup" || update.action !== "added") return;
 
-    enableBtn.addEventListener("click", () => {
-      const s = state[axis];
-      s.enabled = !s.enabled;
-      setUIEnabled(axis, s.enabled);
-      applyPlane(axis);
-    });
+    const markup = update.markup;
+    const start = markup && markup.start;
+    const end = markup && markup.end;
+    if (!start || !end) return;
 
-    slider.addEventListener("input", () => {
-      const val = Number(slider.value);
-      state[axis].pos = val;
-      number.value = val;
-      debounced(`pos-${axis}`, () => applyPlane(axis));
-    });
+    currentMarkupId = typeof markup.id === "number" ? markup.id : null;
 
-    number.addEventListener("change", () => {
-      let val = Number(number.value);
-      if (Number.isNaN(val)) val = 0;
-      const min = Number(els.rangeMin.value);
-      const max = Number(els.rangeMax.value);
-      val = Math.min(max, Math.max(min, val));
-      state[axis].pos = val;
-      slider.value = val;
-      number.value = val;
-      applyPlane(axis);
-    });
+    const x1 = start.positionX;
+    const y1 = start.positionY;
+    const x2 = end.positionX;
+    const y2 = end.positionY;
+    // Z is intentionally discarded: the drawn line always defines a level
+    // (Z = 0 reference) cut, regardless of what elevation was clicked on.
 
-    flipBtn.addEventListener("click", () => {
-      state[axis].flip = !state[axis].flip;
-      flipBtn.classList.toggle("active", state[axis].flip);
-      applyPlane(axis);
-    });
+    els.x1.value = Math.round(x1);
+    els.y1.value = Math.round(y1);
+    els.x2.value = Math.round(x2);
+    els.y2.value = Math.round(y2);
+
+    await stopDraw();
+    await applySection(x1, y1, x2, y2);
   }
 
-  function applyRangeToSliders() {
-    const min = Number(els.rangeMin.value);
-    const max = Number(els.rangeMax.value);
-    AXES.forEach((axis) => {
-      els[axis].slider.min = min;
-      els[axis].slider.max = max;
-      if (state[axis].pos < min || state[axis].pos > max) {
-        const clamped = Math.min(max, Math.max(min, state[axis].pos));
-        state[axis].pos = clamped;
-        els[axis].slider.value = clamped;
-        els[axis].number.value = clamped;
-        if (state[axis].enabled) applyPlane(axis);
+  function wireControls() {
+    els.drawBtn.addEventListener("click", startDraw);
+    els.cancelDrawBtn.addEventListener("click", stopDraw);
+
+    els.applyManualBtn.addEventListener("click", () => {
+      const x1 = Number(els.x1.value);
+      const y1 = Number(els.y1.value);
+      const x2 = Number(els.x2.value);
+      const y2 = Number(els.y2.value);
+      if ([x1, y1, x2, y2].some((v) => Number.isNaN(v))) {
+        setStatus("Please enter valid numbers for all four coordinates.", true);
+        return;
       }
+      applySection(x1, y1, x2, y2);
     });
-  }
 
-  function wireGlobalControls() {
-    els.showHandles.addEventListener("change", applyAllVisibility);
+    els.flipBtn.addEventListener("click", () => {
+      flip = !flip;
+      els.flipBtn.classList.toggle("active", flip);
+      reapplyCurrent();
+    });
 
-    els.rangeMin.addEventListener("change", applyRangeToSliders);
-    els.rangeMax.addEventListener("change", applyRangeToSliders);
+    els.showHandles.addEventListener("change", reapplyCurrent);
 
     els.clearBtn.addEventListener("click", async () => {
       try {
-        await API.viewer.removeSectionPlanes(); // no id => removes all planes in the viewer
-        AXES.forEach((axis) => {
-          state[axis].enabled = false;
-          state[axis].pos = 0;
-          state[axis].flip = false;
-          state[axis].id = null;
-          els[axis].slider.value = 0;
-          els[axis].number.value = 0;
-          els[axis].flipBtn.classList.remove("active");
-          setUIEnabled(axis, false);
-        });
-        setStatus("All section planes cleared.");
+        await API.viewer.removeSectionPlanes();
+        if (currentMarkupId !== null) {
+          await API.markup.removeMarkups([currentMarkupId]).catch(() => {});
+        }
+        currentPlaneId = null;
+        currentMarkupId = null;
+        lastLine = null;
+        flip = false;
+        els.flipBtn.classList.remove("active");
+        els.flipBtn.disabled = true;
+        setStatus("Section cleared.");
       } catch (err) {
         console.error(err);
-        setStatus("Failed to clear section planes.", true);
+        setStatus("Failed to clear the section.", true);
       }
     });
-
-    els.fitBtn.addEventListener("click", fitRangeToModel);
-  }
-
-  async function fitRangeToModel() {
-    if (!API) return;
-    setStatus("Calculating model bounds\u2026");
-    els.fitBtn.disabled = true;
-    try {
-      const modelObjectSets = await API.viewer.getObjects();
-      if (!modelObjectSets || !modelObjectSets.length) {
-        setStatus("No loaded model objects found. Load a model first.", true);
-        return;
-      }
-
-      let min = { x: Infinity, y: Infinity, z: Infinity };
-      let max = { x: -Infinity, y: -Infinity, z: -Infinity };
-      let found = false;
-
-      for (const modelObjects of modelObjectSets) {
-        const ids = (modelObjects.objects || [])
-          .map((o) => o.id)
-          .filter((id) => typeof id === "number");
-        if (!ids.length) continue;
-
-        // Avoid overly large single calls on huge models.
-        const chunkSize = 2000;
-        for (let i = 0; i < ids.length; i += chunkSize) {
-          const chunk = ids.slice(i, i + chunkSize);
-          const boxes = await API.viewer.getObjectBoundingBoxes(modelObjects.modelId, chunk);
-          for (const b of boxes || []) {
-            if (!b || !b.boundingBox) continue;
-            const { min: bmin, max: bmax } = b.boundingBox;
-            if (!bmin || !bmax) continue;
-            found = true;
-            min.x = Math.min(min.x, bmin.x);
-            min.y = Math.min(min.y, bmin.y);
-            min.z = Math.min(min.z, bmin.z);
-            max.x = Math.max(max.x, bmax.x);
-            max.y = Math.max(max.y, bmax.y);
-            max.z = Math.max(max.z, bmax.z);
-          }
-        }
-      }
-
-      if (!found) {
-        setStatus("Couldn't determine model bounds.", true);
-        return;
-      }
-
-      const overallMin = Math.min(min.x, min.y, min.z);
-      const overallMax = Math.max(max.x, max.y, max.z);
-      const padding = (overallMax - overallMin) * 0.05 || 500;
-
-      els.rangeMin.value = Math.floor(overallMin - padding);
-      els.rangeMax.value = Math.ceil(overallMax + padding);
-      applyRangeToSliders();
-
-      setStatus("Range fitted to loaded model bounds.");
-    } catch (err) {
-      console.error(err);
-      setStatus("Failed to compute model bounds.", true);
-    } finally {
-      els.fitBtn.disabled = false;
-    }
   }
 
   async function init() {
     cacheEls();
-    AXES.forEach(wireAxis);
-    wireGlobalControls();
+    wireControls();
 
     setStatus("Connecting to Trimble Connect\u2026");
     try {
       API = await TrimbleConnectWorkspace.connect(window.parent, (event, data) => {
-        // React to relevant workspace events if needed.
-        if (event === "extension.command" && data === "close") {
-          // Extension is being closed/removed by the host.
+        if (event === "viewer.onMarkupChanged") {
+          onMarkupChanged(data);
         }
       }, 5000);
-      setStatus("Ready. Toggle X, Y or Z to add a cutting plane.");
+      setStatus("Ready. Click \"Draw section line\" to begin.");
     } catch (err) {
       console.error(err);
       setStatus("Could not connect to Trimble Connect. Open this app as a 3D Viewer extension.", true);
