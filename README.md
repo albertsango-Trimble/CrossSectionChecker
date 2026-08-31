@@ -6,32 +6,41 @@ independent of the built-in section box tool.
 
 ## What it does
 
-- Toggle an axis-aligned cutting plane on X, Y and/or Z independently.
-- Drag a slider (or type an exact value in millimeters) to move each plane
-  through the model in real time.
-- Flip the cut direction per axis with the ⇄ button.
-- Show/hide the on-screen plane handles.
-- "Fit to model" automatically sets the slider range to the loaded model's
-  bounding box.
-- "Clear all sections" removes every section plane currently in the viewer.
+- Click **"Draw section line"**, then click two points directly in the 3D
+  view to define a cutting line in plan (X/Y). The camera automatically
+  snaps to a top-down view first so you're drawing in true plan.
+- Whatever elevation (Z) the clicks land on is discarded — the cut is
+  always a perfectly vertical plane through that line, so it shows
+  everything the line crosses at every height, like a standard building
+  section.
+- A manual entry form (X1/Y1/X2/Y2 in millimeters) is available as a
+  fallback if you'd rather type exact coordinates than click.
+- **⇄** flips which side of the line gets cut away.
+- **Show plane handles** toggles the on-screen gizmo/border.
+- **Clear section** removes the plane (and the line markup used to define it).
 
 ## How it works
 
 It's a plain HTML/JS page that loads the `trimble-connect-workspace-api`
-IIFE bundle and talks to the 3D Viewer's `ViewerAPI`:
+IIFE bundle and talks to the Workspace API:
 
-- `viewer.addSectionPlane(plane)` — adds a plane defined by a
-  `directionX/Y/Z` unit vector and a `positionX/Y/Z` point (mm) on the plane.
-- `viewer.removeSectionPlanes([id])` — removes a specific plane by the id
-  returned from `addSectionPlane`.
-- `viewer.removeSectionPlanes()` — removes all section planes (used by
-  "Clear all").
-- `viewer.getObjects()` + `viewer.getObjectBoundingBoxes()` — used by
-  "Fit to model" to compute the overall model bounds.
-
-Because the API only supports add/remove (no in-place update), moving a
-slider removes the previous plane for that axis and adds a new one. Slider
-drags are debounced (~60ms) so this stays smooth.
+- `viewer.setCamera("top")` — snaps to plan view before drawing, so clicks
+  naturally define an X/Y line.
+- `viewer.activateTool("lineMarkup", options)` — activates Trimble
+  Connect's built-in line-drawing tool so the user can click two points
+  directly in the 3D view.
+- The `viewer.onMarkupChanged` event fires when the line is completed,
+  delivering a `LineMarkup` with `start`/`end` points (`positionX/Y/Z` in
+  mm). Only the X/Y coordinates are used — Z is intentionally ignored so
+  the cut is always level regardless of what surface was clicked.
+- From the two (x, y) points, the extension computes a horizontal unit
+  normal perpendicular to the line (`directionZ` is always 0, keeping the
+  plane vertical) and calls `viewer.addSectionPlane(plane)` with that
+  normal and the line's midpoint as the position.
+- `viewer.removeSectionPlanes([id])` / `removeSectionPlanes()` — removes
+  the current plane, or everything, on "Clear section".
+- `markup.removeMarkups([id])` — cleans up the line markup once its job
+  (defining the cut) is done.
 
 ## Files
 
