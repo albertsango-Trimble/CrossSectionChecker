@@ -1,6 +1,6 @@
 {
   "title": "Cross Section Viewer",
   "icon": "https://YOUR_HOSTING_DOMAIN/cross-section-extension/icon.png",
-  "url": "https://YOUR_HOSTING_DOMAIN/cross-section-extension/index.html",
+  "url": "https://albertsango-trimble.github.io/CrossSectionChecker/",
   "infoUrl": "https://YOUR_HOSTING_DOMAIN/cross-section-extension/README.md"
 }
