@@ -148,6 +148,22 @@
     gap: 6px;
   }
   .manual-grid input { flex: 1; min-width: 0; }
+  .split-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    margin-bottom: 3px;
+  }
+  .split-img {
+    width: 100%;
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #eee;
+  }
+  .split-divider {
+    height: 8px;
+  }
   #status {
     font-size: 11px;
     color: var(--muted);
@@ -171,16 +187,61 @@
     <div class="hint" style="margin-top:8px;">Click "Draw section line", click two points in the 3D view, then click <b>Done</b> in the top toolbar to finish the line. Then come back here and click "Use drawn line". Elevation is ignored — the cut is always a vertical plane through that line, so it shows everything crossing it at every height.</div>
 
     <div class="field-row" style="margin-top:12px;">
-      <span style="font-weight:600; color:var(--text);">Manual entry (mm)</span>
+      <span style="font-weight:600; color:var(--text);">Alignment</span>
     </div>
-    <div class="manual-grid">
-      <label>X1 <input type="number" id="x1" step="10" value="0" /></label>
-      <label>Y1 <input type="number" id="y1" step="10" value="0" /></label>
-      <label>X2 <input type="number" id="x2" step="10" value="1000" /></label>
-      <label>Y2 <input type="number" id="y2" step="10" value="0" /></label>
+    <div class="hint">Upload a CSV alignment, or pick one you've used before, then choose a chainage to generate a section perpendicular to it at that point.</div>
+
+    <div class="btn-row" style="margin-top:8px; align-items:center;">
+      <select id="alignmentSelect" style="flex:1; padding:5px; border:1px solid var(--border); border-radius:4px; font-size:12px;">
+        <option value="">— none —</option>
+      </select>
+      <button class="toggle-btn" id="deleteAlignmentBtn" title="Delete selected alignment" disabled>🗑</button>
+    </div>
+
+    <div class="btn-row" style="margin-top:8px; align-items:center;">
+      <select id="alignmentUnit" style="padding:5px; border:1px solid var(--border); border-radius:4px; font-size:12px;">
+        <option value="m" selected>File units: meters</option>
+        <option value="mm">File units: millimeters</option>
+      </select>
+      <button class="btn secondary" id="uploadAlignmentBtn">Upload CSV…</button>
+      <input type="file" id="alignmentFile" accept=".csv,.txt" style="display:none;" />
+    </div>
+    <div class="hint" style="margin-top:6px;">CSV with a header row of <code>station,x,y</code> or just <code>x,y</code> (station is computed as distance along the line if omitted) — one point per row.</div>
+
+    <div id="alignmentActive" style="display:none; margin-top:12px;">
+      <div id="alignmentInfo" class="hint" style="margin-top:0;"></div>
+
+      <div class="field-row" style="margin-top:8px; margin-bottom:0;">
+        <span style="font-weight:600; color:var(--text);">Chainage</span>
+        <span id="chainageReadout" style="font-weight:600;"></span>
+      </div>
+      <input type="range" id="chainageSlider" min="0" max="1000" step="1" value="0" style="width:100%; margin-top:4px;" />
+
+      <div class="manual-grid" style="margin-top:8px;">
+        <label>Chainage (mm) <input type="number" id="chainageNumber" step="100" value="0" /></label>
+        <label>Half-width (mm) <input type="number" id="halfWidth" step="1000" value="20000" /></label>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="plane-row">
+      <span class="plane-label">Views</span>
+    </div>
+    <div class="hint">A true live split-screen isn't possible through the extension API — extensions only get one shared camera on the single 3D scene. These buttons snap that one camera between plan and section, and "Capture split view" grabs a still image of each to show stacked below.</div>
+    <div class="btn-row" style="margin-top:8px;">
+      <button class="btn secondary" id="topViewBtn">Top view</button>
+      <button class="btn secondary" id="sectionViewBtn">Section view</button>
     </div>
     <div class="btn-row">
-      <button class="btn secondary" id="applyManualBtn">Create from coordinates</button>
+      <button class="btn" id="captureSplitBtn">📷 Capture split view</button>
+    </div>
+    <div id="splitPreview" style="display:none; margin-top:10px;">
+      <div class="split-label">Plan (top)</div>
+      <img id="splitTopImg" class="split-img" />
+      <div class="split-divider"></div>
+      <div class="split-label">Section</div>
+      <img id="splitSectionImg" class="split-img" />
     </div>
   </div>
 
