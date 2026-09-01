@@ -68,15 +68,15 @@
     const theta = Math.atan2(ny, nx);
     const halfTheta = theta / 2;
 
-    const HUGE = 2000000; // 2km — generous coverage along the line and vertically
+    const VERTICAL_EXTENT = 500000; // 500m — generous, since a 2D line carries no height info
 
     return {
       positionX: midX,
       positionY: midY,
       positionZ: 0,
       sizeX: thickness,
-      sizeY: HUGE,
-      sizeZ: HUGE,
+      sizeY: len, // box length along the line matches the line's own length
+      sizeZ: VERTICAL_EXTENT,
       rotationX: 0,
       rotationY: 0,
       rotationZ: Math.sin(halfTheta),
