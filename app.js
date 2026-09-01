@@ -7,6 +7,7 @@
   let currentMarkupId = null;
   let lastLine = null; // { x1, y1, x2, y2 } in mm
   let preDrawMarkupIds = new Set();
+  let clearanceMarkupIds = [];
 
   const els = {};
 
@@ -41,6 +42,9 @@
     els.splitPreview = $("#splitPreview");
     els.splitTopImg = $("#splitTopImg");
     els.splitSectionImg = $("#splitSectionImg");
+    els.markupClearanceBtn = $("#markupClearanceBtn");
+    els.clearClearanceBtn = $("#clearClearanceBtn");
+    els.clearanceResults = $("#clearanceResults");
   }
 
   function setStatus(msg, isError) {
@@ -492,6 +496,123 @@
     generateSectionAtChainage(mid);
   }
 
+  // ---- Z-axis clearance markup feature ----
+
+  async function fetchObjectNames(modelId, ids) {
+    const names = {};
+    try {
+      const props = await API.viewer.getObjectProperties(modelId, ids);
+      (props || []).forEach((p, i) => {
+        const id = ids[i];
+        names[id] = (p && (p.name || p.externalId)) || `Object ${id}`;
+      });
+    } catch (err) {
+      console.error(err);
+      ids.forEach((id) => {
+        names[id] = `Object ${id}`;
+      });
+    }
+    return names;
+  }
+
+  async function markupClearances() {
+    if (!API) return;
+    els.markupClearanceBtn.disabled = true;
+    setStatus("Reading selected objects\u2026");
+    try {
+      const selection = await API.viewer.getSelection();
+      const groups = (selection || []).filter((g) => g && g.objectRuntimeIds && g.objectRuntimeIds.length);
+
+      const totalCount = groups.reduce((sum, g) => sum + g.objectRuntimeIds.length, 0);
+      if (totalCount < 2) {
+        setStatus("Select at least 2 objects in the 3D view first.", true);
+        return;
+      }
+
+      const items = [];
+      for (const g of groups) {
+        const [boxes, names] = await Promise.all([
+          API.viewer.getObjectBoundingBoxes(g.modelId, g.objectRuntimeIds),
+          fetchObjectNames(g.modelId, g.objectRuntimeIds),
+        ]);
+        (boxes || []).forEach((b) => {
+          if (!b || !b.boundingBox || !b.boundingBox.min || !b.boundingBox.max) return;
+          const { min, max } = b.boundingBox;
+          items.push({
+            modelId: g.modelId,
+            id: b.objectRuntimeId,
+            name: names[b.objectRuntimeId] || `Object ${b.objectRuntimeId}`,
+            zMin: min.z,
+            zMax: max.z,
+            centerX: (min.x + max.x) / 2,
+            centerY: (min.y + max.y) / 2,
+          });
+        });
+      }
+
+      if (items.length < 2) {
+        setStatus("Could not read bounding boxes for the selected objects.", true);
+        return;
+      }
+
+      items.sort((a, b) => a.zMin - b.zMin);
+
+      // Clear any previous clearance markups before adding new ones.
+      if (clearanceMarkupIds.length) {
+        await API.markup.removeMarkups(clearanceMarkupIds).catch(() => {});
+        clearanceMarkupIds = [];
+      }
+
+      const measurements = [];
+      const resultLines = [];
+      for (let i = 0; i < items.length - 1; i++) {
+        const lower = items[i];
+        const upper = items[i + 1];
+        const gap = upper.zMin - lower.zMax;
+        if (gap > 0) {
+          const point = { positionX: lower.centerX, positionY: lower.centerY };
+          measurements.push({
+            start: { ...point, positionZ: lower.zMax },
+            end: { ...point, positionZ: upper.zMin },
+            mainLineStart: { ...point, positionZ: lower.zMax },
+            mainLineEnd: { ...point, positionZ: upper.zMin },
+          });
+          resultLines.push(`${lower.name} \u2192 ${upper.name}: ${Math.round(gap)} mm`);
+        } else {
+          resultLines.push(`${lower.name} \u2192 ${upper.name}: overlapping (skipped)`);
+        }
+      }
+
+      if (measurements.length) {
+        const added = await API.markup.addMeasurementMarkups(measurements);
+        clearanceMarkupIds = (added || []).map((m) => m.id).filter((id) => typeof id === "number");
+      }
+
+      els.clearanceResults.textContent = resultLines.join("\n");
+      setStatus(measurements.length ? "Clearances marked up." : "No positive clearances found between the selected objects.", !measurements.length);
+    } catch (err) {
+      console.error(err);
+      setStatus("Failed to markup clearances.", true);
+    } finally {
+      els.markupClearanceBtn.disabled = false;
+    }
+  }
+
+  async function clearClearances() {
+    if (!API) return;
+    try {
+      if (clearanceMarkupIds.length) {
+        await API.markup.removeMarkups(clearanceMarkupIds);
+      }
+      clearanceMarkupIds = [];
+      els.clearanceResults.textContent = "";
+      setStatus("Clearance markups cleared.");
+    } catch (err) {
+      console.error(err);
+      setStatus("Failed to clear clearance markups.", true);
+    }
+  }
+
   function wireControls() {
     els.drawBtn.addEventListener("click", startDraw);
     els.useDrawnBtn.addEventListener("click", useDrawnLine);
@@ -500,6 +621,9 @@
     els.topViewBtn.addEventListener("click", goToTopView);
     els.sectionViewBtn.addEventListener("click", goToSectionView);
     els.captureSplitBtn.addEventListener("click", captureSplitView);
+
+    els.markupClearanceBtn.addEventListener("click", markupClearances);
+    els.clearClearanceBtn.addEventListener("click", clearClearances);
 
     els.alignmentSelect.addEventListener("change", () => setActiveAlignment(els.alignmentSelect.value));
 
