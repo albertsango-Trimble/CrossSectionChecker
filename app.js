@@ -3,7 +3,7 @@
 
   let API = null;
   let drawing = false;
-  let currentPlaneId = null;
+  let currentPlaneIds = [];
   let currentMarkupId = null;
   let flip = false;
   let lastLine = null; // { x1, y1, x2, y2 } in mm
@@ -34,6 +34,7 @@
     els.halfWidth = $("#halfWidth");
     els.flipBtn = $("#flipBtn");
     els.showHandles = $("#showHandles");
+    els.thickness = $("#thickness");
     els.clearBtn = $("#clearBtn");
     els.status = $("#status");
     els.topViewBtn = $("#topViewBtn");
@@ -49,7 +50,7 @@
     els.status.classList.toggle("error", !!isError);
   }
 
-  function buildVerticalPlane(x1, y1, x2, y2) {
+  function buildSlabPlanes(x1, y1, x2, y2) {
     const dx = x2 - x1;
     const dy = y2 - y1;
     const len = Math.sqrt(dx * dx + dy * dy);
@@ -65,32 +66,47 @@
 
     const midX = (x1 + x2) / 2;
     const midY = (y1 + y2) / 2;
+    const thickness = Math.max(Number(els.thickness.value) || 10, 1);
+    const half = thickness / 2;
+    const controlsVisible = !!els.showHandles.checked;
 
-    return {
+    // Two opposing planes, offset by half the thickness on either side of
+    // the line, keep only the slab of material between them visible.
+    const nearPlane = {
       directionX: nx,
       directionY: ny,
       directionZ: 0,
-      positionX: midX,
-      positionY: midY,
-      positionZ: 0, // elevation is irrelevant to a vertical plane's orientation
-      controlsVisible: !!els.showHandles.checked,
+      positionX: midX - nx * half,
+      positionY: midY - ny * half,
+      positionZ: 0,
+      controlsVisible,
     };
+    const farPlane = {
+      directionX: -nx,
+      directionY: -ny,
+      directionZ: 0,
+      positionX: midX + nx * half,
+      positionY: midY + ny * half,
+      positionZ: 0,
+      controlsVisible,
+    };
+    return [nearPlane, farPlane];
   }
 
   async function applySection(x1, y1, x2, y2) {
-    const plane = buildVerticalPlane(x1, y1, x2, y2);
-    if (!plane) {
+    const planes = buildSlabPlanes(x1, y1, x2, y2);
+    if (!planes) {
       setStatus("The two points are the same \u2014 can't define a line.", true);
       return;
     }
     try {
-      if (currentPlaneId !== null) {
-        await API.viewer.removeSectionPlanes([currentPlaneId]);
-        currentPlaneId = null;
+      if (currentPlaneIds.length) {
+        await API.viewer.removeSectionPlanes(currentPlaneIds);
+        currentPlaneIds = [];
       }
-      const added = await API.viewer.addSectionPlane(plane);
-      if (Array.isArray(added) && added.length && typeof added[0].id === "number") {
-        currentPlaneId = added[0].id;
+      const added = await API.viewer.addSectionPlane(planes);
+      if (Array.isArray(added)) {
+        currentPlaneIds = added.map((p) => p.id).filter((id) => typeof id === "number");
       }
       lastLine = { x1, y1, x2, y2 };
       els.flipBtn.disabled = false;
@@ -577,6 +593,7 @@
     });
 
     els.showHandles.addEventListener("change", reapplyCurrent);
+    els.thickness.addEventListener("change", reapplyCurrent);
 
     els.clearBtn.addEventListener("click", async () => {
       try {
@@ -584,7 +601,7 @@
         if (currentMarkupId !== null) {
           await API.markup.removeMarkups([currentMarkupId]).catch(() => {});
         }
-        currentPlaneId = null;
+        currentPlaneIds = [];
         currentMarkupId = null;
         lastLine = null;
         preDrawMarkupIds = new Set();
