@@ -1,9 +1,9 @@
 # Cross Section Viewer — Trimble Connect 3D Extension
 
 A lightweight extension for the Trimble Connect for Browser 3D Viewer that
-generates a vertical cutting plane through a line — either drawn by hand in
-plan, or picked out as a chainage along an uploaded alignment — so you get
-a proper cross-section through the model at that location.
+generates a thin cutting slice through the model along a line — either
+drawn by hand in plan, or picked out as a chainage along an uploaded
+alignment — so you get a proper, thin cross-section at that location.
 
 ## What it does
 
@@ -15,23 +15,39 @@ a proper cross-section through the model at that location.
   line — the extension can't skip this step).
 - Click **"Use drawn line"** in the extension panel to fetch that finished
   line and turn it into a section. Whatever elevation (Z) the two clicks
-  landed on is discarded — the cut is always a perfectly vertical plane
-  through the line, so it shows everything the line crosses at every
-  height, like a standard building section.
+  landed on is discarded — the cut is always perfectly level and vertical,
+  regardless of what surface was clicked.
 - **Alignment / chainage**: upload a CSV alignment (or pick one you've used
   before), then drag a chainage slider to generate a section perpendicular
   to the alignment at that exact point along it — the standard way
-  road/rail cross-sections are picked out. This is the tool for that
-  workflow instead of typing raw coordinates.
-- **⇄** flips which side of the line gets cut away.
-- **Show plane handles** toggles the on-screen gizmo/border.
+  road/rail cross-sections are picked out.
+- **Show box handles** toggles the on-screen drag handles for the section
+  box.
 - **Slice thickness (mm)** controls how thick the cut is (default 10mm) —
   see below.
-- **Clear section** removes the plane (and the line markup used to define it).
+- **Clear section** removes the section (and the line markup used to
+  define it).
 - **Views**: "Top view" and "Section view" snap the single 3D camera
-  between plan and a computed front-on look at the current cutting plane.
-  "Capture split view" grabs a still image of each and shows them stacked
-  in the panel, one above the other, as a plan/section reference pair.
+  between plan and a computed front-on look at the current cut. "Capture
+  split view" grabs a still image of each and shows them stacked in the
+  panel, one above the other, as a plan/section reference pair.
+
+## Slice thickness
+
+The section is a thin **slab**, 10mm thick by default, not an infinite
+cutting plane that just clips away half the model. This is built using
+Trimble Connect's `SectionBox`: a box centered on the drawn/chainage line,
+very large in the two directions along the line and vertically (so nothing
+gets clipped there), but only as thick as the **Slice thickness (mm)**
+value in the direction perpendicular to the line. Only what falls inside
+that thin box stays visible — everything else, on both sides, is clipped
+away, giving a true thin cross-section slice. Change the thickness field
+any time to make the slab thicker or thinner; it regenerates the section
+immediately.
+
+Trimble Connect only supports one section box at a time, so drawing a new
+line or moving the chainage slider replaces the existing box rather than
+adding another.
 
 ## Using the alignment / chainage feature
 
@@ -47,36 +63,18 @@ a proper cross-section through the model at that location.
 3. Once loaded, the extension draws the alignment's centerline into the
    3D view as a reference polyline, and shows a **chainage slider**.
    Drag it (or type an exact value in the millimeter field) to move along
-   the alignment; a section plane perpendicular to the alignment is
-   generated live at that point.
-4. **Half-width** controls how far the cutting line extends to each side
-   of the alignment (in mm) — effectively how wide a "window" the section
-   plane covers, since a plane is infinite in the API but the alignment's
-   local direction only makes sense near that chainage.
+   the alignment; a section perpendicular to the alignment is generated
+   live at that point.
+4. **Half-width** controls how far the drawn line (and therefore the
+   section box's position) extends to each side of the alignment — this
+   only affects where the box is centered along the line direction, since
+   the box's actual coverage along that axis is generous regardless (see
+   "Slice thickness" above).
 
 Note: this is a general-purpose CSV-based alignment, not a live link to a
 specific alignment/road design object in your Trimble Connect project —
 the Workspace API doesn't expose civil alignment geometry directly, so
 exporting your alignment's points to CSV is the practical bridge.
-
-## Slice thickness
-
-By default the section isn't a single infinite cutting plane (which would
-just clip away everything on one side and leave the model looking cut in
-half) — it's a thin **slab**, 10mm thick by default. This is built from
-**two** opposing section planes, offset by half the thickness on either
-side of the drawn/chainage line:
-
-- A "near" plane facing one way, positioned half the thickness back from
-  the line.
-- A "far" plane facing the opposite way, positioned half the thickness
-  forward.
-
-Only the material between the two planes stays visible — everything else,
-on both sides, is clipped away. This gives you a true thin cross-section
-slice rather than a half-model cutaway. Change the **Slice thickness (mm)**
-field any time to make the slab thicker or thinner; it regenerates the
-section immediately.
 
 ## A note on "split screen"
 
@@ -114,26 +112,28 @@ IIFE bundle and talks to the Workspace API:
   chainage) are used — Z is intentionally ignored so the cut is always
   level.
 - From the two (x, y) endpoints, the extension computes a horizontal unit
-  normal perpendicular to the line (`directionZ` is always 0, keeping the
-  planes vertical) and calls `viewer.addSectionPlane([nearPlane, farPlane])`
-  with **two** opposing planes offset by half the slice thickness on
-  either side of the line's midpoint, so only the thin slab between them
-  stays visible (see "Slice thickness" above).
+  normal perpendicular to the line, then builds a `SectionBox`: centered
+  on the line's midpoint, sized `sizeX` = slice thickness in the normal
+  direction and a very large `sizeY`/`sizeZ` (2km) along the line and
+  vertically, rotated about Z (as a quaternion) so its thin axis lines up
+  with the normal. `viewer.addSectionBox(box)` applies it.
 - The alignment CSV is parsed client-side, converted to millimeters, and
   stored in `localStorage`. Moving the chainage slider interpolates a
   point and local tangent direction along the alignment's polyline, then
-  builds a perpendicular line of the chosen half-width around that point
-  — fed through the same `applySection()` used by the draw/click workflow.
+  builds a line of the chosen half-width around that point — fed through
+  the same `applySection()` used by the draw/click workflow.
 - `markup.addLineMarkups(segments)` — draws the alignment's full polyline
   as a chain of line-markup segments for visual reference.
+- `viewer.selectSectionBox()` / `deSelectSectionBox()` — show/hide the
+  section box's drag handles, tied to "Show box handles".
 - For the section-view camera, the extension builds a `Camera` object
   (`position`/`lookAt`/`upDirection`, all in **meters** — note this differs
-  from the section plane's millimeter units) placed back along the plane's
+  from the section box's millimeter units) placed back along the cut's
   normal from the line's midpoint, looking at it with Z-up.
 - `viewer.getSnapshot()` — returns a data URL PNG of whatever the camera
   is currently looking at; used for "Capture split view".
-- `viewer.removeSectionPlanes([ids])` / `removeSectionPlanes()` — removes
-  the current pair of planes, or everything, on "Clear section".
+- `viewer.removeSectionBox()` — removes the current section box on
+  "Clear section" (or before adding a new one).
 - `markup.removeMarkups([ids])` — cleans up line markups (the drawn cut
   line, or the alignment reference polyline) once no longer needed.
 
@@ -141,8 +141,7 @@ IIFE bundle and talks to the Workspace API:
 
 - The section-view camera direction is a best-effort calculation. If it
   ends up facing the wrong way (looking away from the model instead of at
-  it), just orbit manually, or click "Section view" again after flipping
-  the cut direction (⇄) — both computations share the same normal.
+  it), just orbit manually.
 - "Capture split view" waits 400ms after each camera move before taking
   the snapshot to let the scene render; on a very large model this may
   not be quite enough time and the image could show it mid-transition. If
@@ -151,8 +150,11 @@ IIFE bundle and talks to the Workspace API:
   to that browser/device — they aren't shared across users or synced to
   the Trimble Connect project. Re-upload the CSV on another machine if
   needed.
-- Position values for section planes and markups are in millimeters,
-  consistent with the `SectionPlane` and `LineMarkup` APIs.
+- Position values for the section box and markups are in millimeters,
+  consistent with the `SectionBox` and `LineMarkup` APIs.
+- Only one section box can exist at a time (a Trimble Connect API
+  limitation), so this tool always replaces the previous one rather than
+  layering multiple sections.
 
 ## Files
 
