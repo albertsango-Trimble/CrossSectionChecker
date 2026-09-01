@@ -3,9 +3,8 @@
 
   let API = null;
   let drawing = false;
-  let currentPlaneIds = [];
+  let hasSectionBox = false;
   let currentMarkupId = null;
-  let flip = false;
   let lastLine = null; // { x1, y1, x2, y2 } in mm
   let preDrawMarkupIds = new Set();
 
@@ -32,7 +31,6 @@
     els.chainageSlider = $("#chainageSlider");
     els.chainageNumber = $("#chainageNumber");
     els.halfWidth = $("#halfWidth");
-    els.flipBtn = $("#flipBtn");
     els.showHandles = $("#showHandles");
     els.thickness = $("#thickness");
     els.clearBtn = $("#clearBtn");
@@ -50,70 +48,62 @@
     els.status.classList.toggle("error", !!isError);
   }
 
-  function buildSlabPlanes(x1, y1, x2, y2) {
+  function buildSectionBox(x1, y1, x2, y2) {
     const dx = x2 - x1;
     const dy = y2 - y1;
     const len = Math.sqrt(dx * dx + dy * dy);
     if (!len || Number.isNaN(len)) return null;
 
-    // Perpendicular, horizontal normal (plane is vertical: no Z component).
-    let nx = -dy / len;
-    let ny = dx / len;
-    if (flip) {
-      nx = -nx;
-      ny = -ny;
-    }
+    // Horizontal unit normal, perpendicular to the line — this is the
+    // "thin" direction of the box (the slice thickness).
+    const nx = -dy / len;
+    const ny = dx / len;
 
     const midX = (x1 + x2) / 2;
     const midY = (y1 + y2) / 2;
     const thickness = Math.max(Number(els.thickness.value) || 10, 1);
-    const half = thickness / 2;
-    const controlsVisible = !!els.showHandles.checked;
 
-    // Two opposing planes, offset by half the thickness on either side of
-    // the line, keep only the slab of material between them visible.
-    const nearPlane = {
-      directionX: nx,
-      directionY: ny,
-      directionZ: 0,
-      positionX: midX - nx * half,
-      positionY: midY - ny * half,
+    // Pure yaw rotation about Z so the box's local X axis aligns with the
+    // normal (thickness direction) and local Y aligns along the line.
+    const theta = Math.atan2(ny, nx);
+    const halfTheta = theta / 2;
+
+    const HUGE = 2000000; // 2km — generous coverage along the line and vertically
+
+    return {
+      positionX: midX,
+      positionY: midY,
       positionZ: 0,
-      controlsVisible,
+      sizeX: thickness,
+      sizeY: HUGE,
+      sizeZ: HUGE,
+      rotationX: 0,
+      rotationY: 0,
+      rotationZ: Math.sin(halfTheta),
+      rotationW: Math.cos(halfTheta),
     };
-    const farPlane = {
-      directionX: -nx,
-      directionY: -ny,
-      directionZ: 0,
-      positionX: midX + nx * half,
-      positionY: midY + ny * half,
-      positionZ: 0,
-      controlsVisible,
-    };
-    return [nearPlane, farPlane];
   }
 
   async function applySection(x1, y1, x2, y2) {
-    const planes = buildSlabPlanes(x1, y1, x2, y2);
-    if (!planes) {
+    const box = buildSectionBox(x1, y1, x2, y2);
+    if (!box) {
       setStatus("The two points are the same \u2014 can't define a line.", true);
       return;
     }
     try {
-      if (currentPlaneIds.length) {
-        await API.viewer.removeSectionPlanes(currentPlaneIds);
-        currentPlaneIds = [];
+      if (hasSectionBox) {
+        await API.viewer.removeSectionBox();
       }
-      const added = await API.viewer.addSectionPlane(planes);
-      if (Array.isArray(added)) {
-        currentPlaneIds = added.map((p) => p.id).filter((id) => typeof id === "number");
+      await API.viewer.addSectionBox(box);
+      hasSectionBox = true;
+      if (els.showHandles.checked) {
+        await API.viewer.selectSectionBox().catch(() => {});
       }
       lastLine = { x1, y1, x2, y2 };
-      els.flipBtn.disabled = false;
       setStatus("Section applied.");
     } catch (err) {
       console.error(err);
-      setStatus("Failed to create the section plane.", true);
+      setStatus("Failed to create the section.", true);
     }
   }
 
@@ -221,12 +211,8 @@
     const lenMm = Math.sqrt(dx * dx + dy * dy);
     if (!lenMm) return null;
 
-    let nx = -dy / lenMm;
-    let ny = dx / lenMm;
-    if (flip) {
-      nx = -nx;
-      ny = -ny;
-    }
+    const nx = -dy / lenMm;
+    const ny = dx / lenMm;
 
     const midXm = (x1 + x2) / 2 / 1000;
     const midYm = (y1 + y2) / 2 / 1000;
@@ -586,28 +572,32 @@
       generateSectionAtChainage(Number(els.chainageSlider.value));
     });
 
-    els.flipBtn.addEventListener("click", () => {
-      flip = !flip;
-      els.flipBtn.classList.toggle("active", flip);
-      reapplyCurrent();
+    els.showHandles.addEventListener("change", async () => {
+      if (!hasSectionBox) return;
+      try {
+        if (els.showHandles.checked) {
+          await API.viewer.selectSectionBox();
+        } else {
+          await API.viewer.deSelectSectionBox();
+        }
+      } catch (err) {
+        console.error(err);
+      }
     });
-
-    els.showHandles.addEventListener("change", reapplyCurrent);
     els.thickness.addEventListener("change", reapplyCurrent);
 
     els.clearBtn.addEventListener("click", async () => {
       try {
-        await API.viewer.removeSectionPlanes();
+        if (hasSectionBox) {
+          await API.viewer.removeSectionBox();
+        }
         if (currentMarkupId !== null) {
           await API.markup.removeMarkups([currentMarkupId]).catch(() => {});
         }
-        currentPlaneIds = [];
+        hasSectionBox = false;
         currentMarkupId = null;
         lastLine = null;
         preDrawMarkupIds = new Set();
-        flip = false;
-        els.flipBtn.classList.remove("active");
-        els.flipBtn.disabled = true;
         els.splitPreview.style.display = "none";
         setStatus("Section cleared.");
       } catch (err) {
