@@ -25,6 +25,8 @@ a proper cross-section through the model at that location.
   workflow instead of typing raw coordinates.
 - **⇄** flips which side of the line gets cut away.
 - **Show plane handles** toggles the on-screen gizmo/border.
+- **Slice thickness (mm)** controls how thick the cut is (default 10mm) —
+  see below.
 - **Clear section** removes the plane (and the line markup used to define it).
 - **Views**: "Top view" and "Section view" snap the single 3D camera
   between plan and a computed front-on look at the current cutting plane.
@@ -56,6 +58,25 @@ Note: this is a general-purpose CSV-based alignment, not a live link to a
 specific alignment/road design object in your Trimble Connect project —
 the Workspace API doesn't expose civil alignment geometry directly, so
 exporting your alignment's points to CSV is the practical bridge.
+
+## Slice thickness
+
+By default the section isn't a single infinite cutting plane (which would
+just clip away everything on one side and leave the model looking cut in
+half) — it's a thin **slab**, 10mm thick by default. This is built from
+**two** opposing section planes, offset by half the thickness on either
+side of the drawn/chainage line:
+
+- A "near" plane facing one way, positioned half the thickness back from
+  the line.
+- A "far" plane facing the opposite way, positioned half the thickness
+  forward.
+
+Only the material between the two planes stays visible — everything else,
+on both sides, is clipped away. This gives you a true thin cross-section
+slice rather than a half-model cutaway. Change the **Slice thickness (mm)**
+field any time to make the slab thicker or thinner; it regenerates the
+section immediately.
 
 ## A note on "split screen"
 
@@ -94,8 +115,10 @@ IIFE bundle and talks to the Workspace API:
   level.
 - From the two (x, y) endpoints, the extension computes a horizontal unit
   normal perpendicular to the line (`directionZ` is always 0, keeping the
-  plane vertical) and calls `viewer.addSectionPlane(plane)` with that
-  normal and the line's midpoint as the position.
+  planes vertical) and calls `viewer.addSectionPlane([nearPlane, farPlane])`
+  with **two** opposing planes offset by half the slice thickness on
+  either side of the line's midpoint, so only the thin slab between them
+  stays visible (see "Slice thickness" above).
 - The alignment CSV is parsed client-side, converted to millimeters, and
   stored in `localStorage`. Moving the chainage slider interpolates a
   point and local tangent direction along the alignment's polyline, then
@@ -109,8 +132,8 @@ IIFE bundle and talks to the Workspace API:
   normal from the line's midpoint, looking at it with Z-up.
 - `viewer.getSnapshot()` — returns a data URL PNG of whatever the camera
   is currently looking at; used for "Capture split view".
-- `viewer.removeSectionPlanes([id])` / `removeSectionPlanes()` — removes
-  the current plane, or everything, on "Clear section".
+- `viewer.removeSectionPlanes([ids])` / `removeSectionPlanes()` — removes
+  the current pair of planes, or everything, on "Clear section".
 - `markup.removeMarkups([ids])` — cleans up line markups (the drawn cut
   line, or the alignment reference polyline) once no longer needed.
 
