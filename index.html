@@ -249,7 +249,7 @@
     <div class="plane-row">
       <span class="plane-label">Z Clearances</span>
     </div>
-    <div class="hint">Select 2 or more objects in the 3D view (Ctrl/Cmd+click) — e.g. a pipe and whatever's directly above it — then click below. Each consecutive pair, sorted by elevation, gets a vertical dimension from the top (obvert) of the lower object to the underside of the one above it.</div>
+    <div class="hint">Automatically finds every object inside the current clip box, groups anything that's vertically stacked, and draws a dimension line + label for the gap between each consecutive pair — e.g. the obvert of a pipe to the underside of whatever's directly above it. No selection needed.
     <div class="btn-row" style="margin-top:8px;">
       <button class="btn" id="markupClearanceBtn">📏 Markup Z clearances</button>
       <button class="btn secondary" id="clearClearanceBtn">Clear clearances</button>
