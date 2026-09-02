@@ -247,14 +247,16 @@
 
   <div class="card">
     <div class="plane-row">
-      <span class="plane-label">Z Clearances</span>
+      <span class="plane-label">2D Section Diagram</span>
     </div>
-    <div class="hint">Automatically finds every object inside the current clip box, groups anything that's vertically stacked, and draws a dimension line + label for the gap between each consecutive pair — e.g. the obvert of a pipe to the underside of whatever's directly above it. No selection needed.
+    <div class="hint">Draws a schematic profile of everything inside the current clip box, positioned by distance along the section line (horizontal) and elevation (vertical). Wide, flat objects (ground, slabs, pavement) are drawn as a stepped surface line; compact objects are drawn as a circle (roughly round, e.g. pipes) or a rectangle, with the gap labelled between anything stacked vertically. This is a schematic built from bounding boxes, not exact geometry — see the note below the diagram.</div>
     <div class="btn-row" style="margin-top:8px;">
-      <button class="btn" id="markupClearanceBtn">📏 Markup Z clearances</button>
-      <button class="btn secondary" id="clearClearanceBtn">Clear clearances</button>
+      <button class="btn" id="drawGraphBtn">📈 Draw 2D section</button>
     </div>
-    <div id="clearanceResults" class="hint" style="margin-top:8px;"></div>
+    <div id="sectionGraphWrap" style="display:none; margin-top:10px;">
+      <div id="sectionGraphContainer" style="width:100%; overflow-x:auto; background:#fff; border:1px solid var(--border); border-radius:4px;"></div>
+      <div class="hint" style="margin-top:6px;">Approximate: shapes come from object bounding boxes (not true outlines), and the ground/surface line is a stepped approximation from wide, flat objects rather than a true terrain profile.</div>
+    </div>
   </div>
 
   <div class="card">
