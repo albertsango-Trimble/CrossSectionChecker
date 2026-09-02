@@ -51,7 +51,50 @@
     els.status.classList.toggle("error", !!isError);
   }
 
-  function buildSectionBox(x1, y1, x2, y2) {
+  let modelZExtent = null; // cached { zMin, zMax } across all loaded models, in mm
+
+  async function ensureModelZExtent() {
+    if (modelZExtent) return modelZExtent;
+    let zMin = Infinity;
+    let zMax = -Infinity;
+    try {
+      const modelObjectSets = await API.viewer.getObjects();
+      for (const mo of modelObjectSets || []) {
+        const ids = (mo.objects || []).map((o) => o.id).filter((id) => typeof id === "number");
+        if (!ids.length) continue;
+        const chunkSize = 2000;
+        for (let i = 0; i < ids.length; i += chunkSize) {
+          const chunk = ids.slice(i, i + chunkSize);
+          let boxes;
+          try {
+            boxes = await API.viewer.getObjectBoundingBoxes(mo.modelId, chunk);
+          } catch (err) {
+            console.error(err);
+            continue;
+          }
+          for (const b of boxes || []) {
+            if (!b || !b.boundingBox) continue;
+            const { min, max } = b.boundingBox;
+            if (!min || !max) continue;
+            if (min.z < zMin) zMin = min.z;
+            if (max.z > zMax) zMax = max.z;
+          }
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+    if (!Number.isFinite(zMin) || !Number.isFinite(zMax)) {
+      // Fallback if the scan found nothing usable — still finite and
+      // reasonably sized, rather than an arbitrary huge span.
+      zMin = -10000;
+      zMax = 10000;
+    }
+    modelZExtent = { zMin, zMax };
+    return modelZExtent;
+  }
+
+  function buildSectionBox(x1, y1, x2, y2, zExtent) {
     const dx = x2 - x1;
     const dy = y2 - y1;
     const len = Math.sqrt(dx * dx + dy * dy);
@@ -71,15 +114,23 @@
     const theta = Math.atan2(ny, nx);
     const halfTheta = theta / 2;
 
-    const VERTICAL_EXTENT = 500000; // 500m — generous, since a 2D line carries no height info
+    // Size the box's vertical extent to the actual model, not a blind
+    // constant — an oversized box (e.g. a fixed 500m) dwarfs a normal
+    // building and can make Trimble Connect zoom the camera out to fit
+    // the whole box when its handles are shown.
+    const zPad = Math.max((zExtent.zMax - zExtent.zMin) * 0.1, 2000);
+    const zLo = zExtent.zMin - zPad;
+    const zHi = zExtent.zMax + zPad;
+    const sizeZ = zHi - zLo;
+    const centerZ = (zLo + zHi) / 2;
 
     return {
       positionX: midX,
       positionY: midY,
-      positionZ: 0,
+      positionZ: centerZ,
       sizeX: thickness,
       sizeY: len, // box length along the line matches the line's own length
-      sizeZ: VERTICAL_EXTENT,
+      sizeZ,
       rotationX: 0,
       rotationY: 0,
       rotationZ: Math.sin(halfTheta),
@@ -88,7 +139,15 @@
   }
 
   async function applySection(x1, y1, x2, y2) {
-    const box = buildSectionBox(x1, y1, x2, y2);
+    let zExtent;
+    try {
+      if (!modelZExtent) setStatus("Computing model extents (first time only)\u2026");
+      zExtent = await ensureModelZExtent();
+    } catch (err) {
+      console.error(err);
+      zExtent = { zMin: -10000, zMax: 10000 };
+    }
+    const box = buildSectionBox(x1, y1, x2, y2, zExtent);
     if (!box) {
       setStatus("The two points are the same \u2014 can't define a line.", true);
       return;
