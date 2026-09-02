@@ -659,15 +659,26 @@
     const zLo = allZMin - zPad;
     const zHi = allZMax + zPad;
 
+    // Fit the horizontal axis to where the model's geometry actually is
+    // within the clip box, rather than the full drawn line/box length —
+    // avoids a lot of dead space if objects only occupy part of it.
+    const rawTMin = Math.max(0, Math.min(...items.map((i) => i.tMin)));
+    const rawTMax = Math.min(len, Math.max(...items.map((i) => i.tMax)));
+    const tSpan = Math.max(rawTMax - rawTMin, 1);
+    const tPad = Math.max(tSpan * 0.08, 200);
+    const tLo = Math.max(0, rawTMin - tPad);
+    const tHi = Math.min(len, rawTMax + tPad);
+    const span = Math.max(tHi - tLo, 1);
+
     const availW = W - 2 * margin;
     const availH = H - 2 * margin;
-    const scale = Math.min(availW / len, availH / (zHi - zLo));
-    const drawnW = len * scale;
+    const scale = Math.min(availW / span, availH / (zHi - zLo));
+    const drawnW = span * scale;
     const drawnH = (zHi - zLo) * scale;
     const offsetX = margin + (availW - drawnW) / 2;
     const offsetY = margin + (availH - drawnH) / 2;
 
-    const svgX = (tMm) => offsetX + tMm * scale;
+    const svgX = (tMm) => offsetX + (tMm - tLo) * scale;
     const svgY = (zMm) => offsetY + drawnH - (zMm - zLo) * scale;
 
     const parts = [];
@@ -676,9 +687,10 @@
     // Outer frame
     parts.push(`<rect x="${offsetX}" y="${offsetY}" width="${drawnW}" height="${drawnH}" fill="none" stroke="#22292f" stroke-width="2"/>`);
 
-    // Axis labels
-    parts.push(`<text x="${offsetX}" y="${offsetY + drawnH + 18}" font-size="11" fill="#667079">0 m</text>`);
-    parts.push(`<text x="${offsetX + drawnW}" y="${offsetY + drawnH + 18}" font-size="11" text-anchor="end" fill="#667079">${(len / 1000).toFixed(1)} m</text>`);
+    // Axis labels — positions are along the original section line, in
+    // meters, not normalized to 0 at the diagram's left edge.
+    parts.push(`<text x="${offsetX}" y="${offsetY + drawnH + 18}" font-size="11" fill="#667079">${(tLo / 1000).toFixed(1)} m</text>`);
+    parts.push(`<text x="${offsetX + drawnW}" y="${offsetY + drawnH + 18}" font-size="11" text-anchor="end" fill="#667079">${(tHi / 1000).toFixed(1)} m</text>`);
     parts.push(`<text x="${offsetX - 6}" y="${offsetY + 10}" font-size="11" text-anchor="end" fill="#667079">${(zHi / 1000).toFixed(1)} m</text>`);
     parts.push(`<text x="${offsetX - 6}" y="${offsetY + drawnH}" font-size="11" text-anchor="end" fill="#667079">${(zLo / 1000).toFixed(1)} m</text>`);
 
@@ -687,8 +699,8 @@
       const sorted = surfaces.slice().sort((a, b) => a.tMin - b.tMin);
       let d = "";
       sorted.forEach((s, i) => {
-        const x1s = svgX(Math.max(s.tMin, 0));
-        const x2s = svgX(Math.min(s.tMax, len));
+        const x1s = svgX(Math.max(s.tMin, tLo));
+        const x2s = svgX(Math.min(s.tMax, tHi));
         const y = svgY(s.zMax);
         if (i === 0) {
           d += `M ${x1s} ${y} L ${x2s} ${y}`;
@@ -701,8 +713,8 @@
 
     // Shapes: circles for roughly round/compact objects, rectangles otherwise.
     shapes.forEach((it) => {
-      const x1s = svgX(Math.max(it.tMin, 0));
-      const x2s = svgX(Math.min(it.tMax, len));
+      const x1s = svgX(Math.max(it.tMin, tLo));
+      const x2s = svgX(Math.min(it.tMax, tHi));
       const yTop = svgY(it.zMax);
       const yBot = svgY(it.zMin);
       const cx = (x1s + x2s) / 2;
@@ -728,7 +740,7 @@
         const upper = stack[i + 1];
         const gap = upper.zMin - lower.zMax;
         if (gap <= 0) continue;
-        const cx = svgX((Math.max(lower.tMin, 0) + Math.min(lower.tMax, len)) / 2);
+        const cx = svgX((Math.max(lower.tMin, tLo) + Math.min(lower.tMax, tHi)) / 2);
         const y1s = svgY(lower.zMax);
         const y2s = svgY(upper.zMin);
         parts.push(`<line x1="${cx}" y1="${y1s}" x2="${cx}" y2="${y2s}" stroke="#cc1e2c" stroke-width="1.5" stroke-dasharray="3,2"/>`);
