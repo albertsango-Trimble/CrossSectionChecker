@@ -517,47 +517,137 @@
 
   async function markupClearances() {
     if (!API) return;
+    if (!lastLine) {
+      setStatus("Create a section first.", true);
+      return;
+    }
     els.markupClearanceBtn.disabled = true;
-    setStatus("Reading selected objects\u2026");
+    setStatus("Scanning objects in the section slice\u2026 this can take a moment on large models.");
     try {
-      const selection = await API.viewer.getSelection();
-      const groups = (selection || []).filter((g) => g && g.objectRuntimeIds && g.objectRuntimeIds.length);
+      const { x1, y1, x2, y2 } = lastLine;
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (!len) {
+        setStatus("Invalid section line.", true);
+        return;
+      }
+      const nx = -dy / len; // normal (thickness axis)
+      const ny = dx / len;
+      const tx = dx / len; // tangent (length axis, along the line)
+      const ty = dy / len;
+      const midX = (x1 + x2) / 2;
+      const midY = (y1 + y2) / 2;
+      const thickness = Math.max(Number(els.thickness.value) || 10, 1);
+      const halfThickness = thickness / 2;
+      const halfLength = len / 2;
 
-      const totalCount = groups.reduce((sum, g) => sum + g.objectRuntimeIds.length, 0);
-      if (totalCount < 2) {
-        setStatus("Select at least 2 objects in the 3D view first.", true);
+      const modelObjectSets = await API.viewer.getObjects();
+      if (!modelObjectSets || !modelObjectSets.length) {
+        setStatus("No loaded model objects found.", true);
         return;
       }
 
-      const items = [];
-      for (const g of groups) {
-        const [boxes, names] = await Promise.all([
-          API.viewer.getObjectBoundingBoxes(g.modelId, g.objectRuntimeIds),
-          fetchObjectNames(g.modelId, g.objectRuntimeIds),
-        ]);
-        (boxes || []).forEach((b) => {
-          if (!b || !b.boundingBox || !b.boundingBox.min || !b.boundingBox.max) return;
-          const { min, max } = b.boundingBox;
-          items.push({
-            modelId: g.modelId,
-            id: b.objectRuntimeId,
-            name: names[b.objectRuntimeId] || `Object ${b.objectRuntimeId}`,
-            zMin: min.z,
-            zMax: max.z,
-            centerX: (min.x + max.x) / 2,
-            centerY: (min.y + max.y) / 2,
-          });
-        });
+      const inSlice = [];
+      for (const mo of modelObjectSets) {
+        const ids = (mo.objects || []).map((o) => o.id).filter((id) => typeof id === "number");
+        if (!ids.length) continue;
+
+        const chunkSize = 1000;
+        for (let i = 0; i < ids.length; i += chunkSize) {
+          const chunk = ids.slice(i, i + chunkSize);
+          let boxes;
+          try {
+            boxes = await API.viewer.getObjectBoundingBoxes(mo.modelId, chunk);
+          } catch (err) {
+            console.error(err);
+            continue;
+          }
+          for (const b of boxes || []) {
+            if (!b || !b.boundingBox) continue;
+            const { min, max } = b.boundingBox;
+            if (!min || !max) continue;
+
+            // Project all 4 horizontal corners onto the box's normal and
+            // tangent axes to test overlap with the (rotated) clip box.
+            let nMin = Infinity;
+            let nMax = -Infinity;
+            let tMin = Infinity;
+            let tMax = -Infinity;
+            for (const cx of [min.x, max.x]) {
+              for (const cy of [min.y, max.y]) {
+                const rx = cx - midX;
+                const ry = cy - midY;
+                const pn = rx * nx + ry * ny;
+                const pt = rx * tx + ry * ty;
+                if (pn < nMin) nMin = pn;
+                if (pn > nMax) nMax = pn;
+                if (pt < tMin) tMin = pt;
+                if (pt > tMax) tMax = pt;
+              }
+            }
+
+            const intersectsNormal = nMax >= -halfThickness && nMin <= halfThickness;
+            const intersectsTangent = tMax >= -halfLength && tMin <= halfLength;
+            if (intersectsNormal && intersectsTangent) {
+              inSlice.push({
+                modelId: mo.modelId,
+                id: b.objectRuntimeId,
+                zMin: min.z,
+                zMax: max.z,
+                centerX: (min.x + max.x) / 2,
+                centerY: (min.y + max.y) / 2,
+                tangentMin: tMin,
+                tangentMax: tMax,
+              });
+            }
+          }
+        }
       }
 
-      if (items.length < 2) {
-        setStatus("Could not read bounding boxes for the selected objects.", true);
+      if (inSlice.length < 2) {
+        setStatus(
+          inSlice.length === 0
+            ? "No objects found in the current section slice."
+            : "Only one object found in the slice \u2014 nothing to compare.",
+          true
+        );
         return;
       }
 
-      items.sort((a, b) => a.zMin - b.zMin);
+      // Cluster into vertical "stacks": objects whose footprint overlaps
+      // along the line (tangent axis) are treated as being at the same
+      // point along the section, and therefore comparable in Z.
+      inSlice.sort((a, b) => a.tangentMin - b.tangentMin);
+      const clusters = [];
+      for (const item of inSlice) {
+        let placed = false;
+        for (const cluster of clusters) {
+          if (item.tangentMin <= cluster.tangentMax) {
+            cluster.items.push(item);
+            cluster.tangentMax = Math.max(cluster.tangentMax, item.tangentMax);
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          clusters.push({ tangentMax: item.tangentMax, items: [item] });
+        }
+      }
 
-      // Clear any previous clearance markups before adding new ones.
+      // Fetch names in bulk, grouped per model.
+      const idsByModel = {};
+      inSlice.forEach((it) => {
+        (idsByModel[it.modelId] = idsByModel[it.modelId] || []).push(it.id);
+      });
+      const namesByModelId = {};
+      for (const modelId of Object.keys(idsByModel)) {
+        namesByModelId[modelId] = await fetchObjectNames(modelId, idsByModel[modelId]);
+      }
+      inSlice.forEach((it) => {
+        it.name = (namesByModelId[it.modelId] && namesByModelId[it.modelId][it.id]) || `Object ${it.id}`;
+      });
+
       if (clearanceMarkupIds.length) {
         await API.markup.removeMarkups(clearanceMarkupIds).catch(() => {});
         clearanceMarkupIds = [];
@@ -565,21 +655,27 @@
 
       const measurements = [];
       const resultLines = [];
-      for (let i = 0; i < items.length - 1; i++) {
-        const lower = items[i];
-        const upper = items[i + 1];
-        const gap = upper.zMin - lower.zMax;
-        if (gap > 0) {
-          const point = { positionX: lower.centerX, positionY: lower.centerY };
-          measurements.push({
-            start: { ...point, positionZ: lower.zMax },
-            end: { ...point, positionZ: upper.zMin },
-            mainLineStart: { ...point, positionZ: lower.zMax },
-            mainLineEnd: { ...point, positionZ: upper.zMin },
-          });
-          resultLines.push(`${lower.name} \u2192 ${upper.name}: ${Math.round(gap)} mm`);
-        } else {
-          resultLines.push(`${lower.name} \u2192 ${upper.name}: overlapping (skipped)`);
+      let stackIndex = 0;
+      for (const cluster of clusters) {
+        if (cluster.items.length < 2) continue;
+        stackIndex += 1;
+        const stack = cluster.items.slice().sort((a, b) => a.zMin - b.zMin);
+        for (let i = 0; i < stack.length - 1; i++) {
+          const lower = stack[i];
+          const upper = stack[i + 1];
+          const gap = upper.zMin - lower.zMax;
+          if (gap > 0) {
+            const point = { positionX: lower.centerX, positionY: lower.centerY };
+            measurements.push({
+              start: { ...point, positionZ: lower.zMax },
+              end: { ...point, positionZ: upper.zMin },
+              mainLineStart: { ...point, positionZ: lower.zMax },
+              mainLineEnd: { ...point, positionZ: upper.zMin },
+            });
+            resultLines.push(`[${stackIndex}] ${lower.name} \u2192 ${upper.name}: ${Math.round(gap)} mm`);
+          } else {
+            resultLines.push(`[${stackIndex}] ${lower.name} \u2192 ${upper.name}: overlapping`);
+          }
         }
       }
 
@@ -588,11 +684,18 @@
         clearanceMarkupIds = (added || []).map((m) => m.id).filter((id) => typeof id === "number");
       }
 
-      els.clearanceResults.textContent = resultLines.join("\n");
-      setStatus(measurements.length ? "Clearances marked up." : "No positive clearances found between the selected objects.", !measurements.length);
+      els.clearanceResults.textContent = resultLines.length
+        ? resultLines.join("\n")
+        : "No vertically stacked objects found in the slice.";
+      setStatus(
+        measurements.length
+          ? `Marked up ${measurements.length} clearance${measurements.length === 1 ? "" : "s"}.`
+          : "No positive clearances found in the slice.",
+        !measurements.length
+      );
     } catch (err) {
       console.error(err);
-      setStatus("Failed to markup clearances.", true);
+      setStatus("Failed to detect clearances.", true);
     } finally {
       els.markupClearanceBtn.disabled = false;
     }
