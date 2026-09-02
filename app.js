@@ -7,7 +7,6 @@
   let currentMarkupId = null;
   let lastLine = null; // { x1, y1, x2, y2 } in mm
   let preDrawMarkupIds = new Set();
-  let clearanceMarkupIds = [];
 
   const els = {};
 
@@ -42,9 +41,9 @@
     els.splitPreview = $("#splitPreview");
     els.splitTopImg = $("#splitTopImg");
     els.splitSectionImg = $("#splitSectionImg");
-    els.markupClearanceBtn = $("#markupClearanceBtn");
-    els.clearClearanceBtn = $("#clearClearanceBtn");
-    els.clearanceResults = $("#clearanceResults");
+    els.drawGraphBtn = $("#drawGraphBtn");
+    els.sectionGraphWrap = $("#sectionGraphWrap");
+    els.sectionGraphContainer = $("#sectionGraphContainer");
   }
 
   function setStatus(msg, isError) {
@@ -496,7 +495,8 @@
     generateSectionAtChainage(mid);
   }
 
-  // ---- Z-axis clearance markup feature ----
+
+  // ---- 2D section diagram feature ----
 
   async function fetchObjectNames(modelId, ids) {
     const names = {};
@@ -515,204 +515,261 @@
     return names;
   }
 
-  async function markupClearances() {
+  function escapeXml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;",
+    }[c]));
+  }
+
+  async function scanObjectsInSlice() {
+    const { x1, y1, x2, y2 } = lastLine;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (!len) throw new Error("Invalid section line.");
+
+    const nx = -dy / len; // normal (thickness axis)
+    const ny = dx / len;
+    const tx = dx / len; // tangent (length axis, along the line)
+    const ty = dy / len;
+    const midX = (x1 + x2) / 2;
+    const midY = (y1 + y2) / 2;
+    const thickness = Math.max(Number(els.thickness.value) || 10, 1);
+    const halfThickness = thickness / 2;
+    const halfLength = len / 2;
+
+    const modelObjectSets = await API.viewer.getObjects();
+    const inSlice = [];
+
+    for (const mo of modelObjectSets || []) {
+      const ids = (mo.objects || []).map((o) => o.id).filter((id) => typeof id === "number");
+      if (!ids.length) continue;
+
+      const chunkSize = 1000;
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize);
+        let boxes;
+        try {
+          boxes = await API.viewer.getObjectBoundingBoxes(mo.modelId, chunk);
+        } catch (err) {
+          console.error(err);
+          continue;
+        }
+        for (const b of boxes || []) {
+          if (!b || !b.boundingBox) continue;
+          const { min, max } = b.boundingBox;
+          if (!min || !max) continue;
+
+          let nMin = Infinity;
+          let nMax = -Infinity;
+          let tMin = Infinity;
+          let tMax = -Infinity;
+          for (const cx of [min.x, max.x]) {
+            for (const cy of [min.y, max.y]) {
+              const rx = cx - midX;
+              const ry = cy - midY;
+              const pn = rx * nx + ry * ny;
+              const pt = rx * tx + ry * ty;
+              if (pn < nMin) nMin = pn;
+              if (pn > nMax) nMax = pn;
+              if (pt < tMin) tMin = pt;
+              if (pt > tMax) tMax = pt;
+            }
+          }
+
+          const intersectsNormal = nMax >= -halfThickness && nMin <= halfThickness;
+          const intersectsTangent = tMax >= -halfLength && tMin <= halfLength;
+          if (intersectsNormal && intersectsTangent) {
+            inSlice.push({
+              modelId: mo.modelId,
+              id: b.objectRuntimeId,
+              zMin: min.z,
+              zMax: max.z,
+              // Shift tangent coordinate so 0 = line start, len = line end.
+              tMin: tMin + halfLength,
+              tMax: tMax + halfLength,
+            });
+          }
+        }
+      }
+    }
+
+    // Best-effort names, grouped per model to minimize calls.
+    const idsByModel = {};
+    inSlice.forEach((it) => {
+      (idsByModel[it.modelId] = idsByModel[it.modelId] || []).push(it.id);
+    });
+    const namesByModelId = {};
+    for (const modelId of Object.keys(idsByModel)) {
+      namesByModelId[modelId] = await fetchObjectNames(modelId, idsByModel[modelId]);
+    }
+    inSlice.forEach((it) => {
+      it.name = (namesByModelId[it.modelId] && namesByModelId[it.modelId][it.id]) || `Object ${it.id}`;
+    });
+
+    return { items: inSlice, len, thickness };
+  }
+
+  function classifyItems(items, len) {
+    const surfaces = [];
+    const shapes = [];
+    items.forEach((it) => {
+      const width = Math.max(it.tMax - it.tMin, 1);
+      const height = Math.max(it.zMax - it.zMin, 1);
+      const isSurface = width >= 0.35 * len && width / height >= 4;
+      if (isSurface) {
+        surfaces.push(it);
+      } else {
+        const aspectDiff = Math.abs(width - height) / Math.max(width, height, 1);
+        it.isCircle = aspectDiff < 0.4;
+        shapes.push(it);
+      }
+    });
+    return { surfaces, shapes };
+  }
+
+  function clusterByOverlap(items) {
+    const sorted = items.slice().sort((a, b) => a.tMin - b.tMin);
+    const clusters = [];
+    for (const item of sorted) {
+      let placed = false;
+      for (const cluster of clusters) {
+        if (item.tMin <= cluster.tMax) {
+          cluster.items.push(item);
+          cluster.tMax = Math.max(cluster.tMax, item.tMax);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) clusters.push({ tMax: item.tMax, items: [item] });
+    }
+    return clusters;
+  }
+
+  function buildSectionSvg(items, len) {
+    const W = 1000;
+    const H = 420;
+    const margin = 44;
+
+    const { surfaces, shapes } = classifyItems(items, len);
+
+    const allZMin = Math.min(...items.map((i) => i.zMin));
+    const allZMax = Math.max(...items.map((i) => i.zMax));
+    const zPad = Math.max((allZMax - allZMin) * 0.12, 300);
+    const zLo = allZMin - zPad;
+    const zHi = allZMax + zPad;
+
+    const availW = W - 2 * margin;
+    const availH = H - 2 * margin;
+    const scale = Math.min(availW / len, availH / (zHi - zLo));
+    const drawnW = len * scale;
+    const drawnH = (zHi - zLo) * scale;
+    const offsetX = margin + (availW - drawnW) / 2;
+    const offsetY = margin + (availH - drawnH) / 2;
+
+    const svgX = (tMm) => offsetX + tMm * scale;
+    const svgY = (zMm) => offsetY + drawnH - (zMm - zLo) * scale;
+
+    const parts = [];
+    parts.push(`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%; height:auto; font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;">`);
+
+    // Outer frame
+    parts.push(`<rect x="${offsetX}" y="${offsetY}" width="${drawnW}" height="${drawnH}" fill="none" stroke="#22292f" stroke-width="2"/>`);
+
+    // Axis labels
+    parts.push(`<text x="${offsetX}" y="${offsetY + drawnH + 18}" font-size="11" fill="#667079">0 m</text>`);
+    parts.push(`<text x="${offsetX + drawnW}" y="${offsetY + drawnH + 18}" font-size="11" text-anchor="end" fill="#667079">${(len / 1000).toFixed(1)} m</text>`);
+    parts.push(`<text x="${offsetX - 6}" y="${offsetY + 10}" font-size="11" text-anchor="end" fill="#667079">${(zHi / 1000).toFixed(1)} m</text>`);
+    parts.push(`<text x="${offsetX - 6}" y="${offsetY + drawnH}" font-size="11" text-anchor="end" fill="#667079">${(zLo / 1000).toFixed(1)} m</text>`);
+
+    // Surface line: stepped, sorted along the line, at each surface's own top Z.
+    if (surfaces.length) {
+      const sorted = surfaces.slice().sort((a, b) => a.tMin - b.tMin);
+      let d = "";
+      sorted.forEach((s, i) => {
+        const x1s = svgX(Math.max(s.tMin, 0));
+        const x2s = svgX(Math.min(s.tMax, len));
+        const y = svgY(s.zMax);
+        if (i === 0) {
+          d += `M ${x1s} ${y} L ${x2s} ${y}`;
+        } else {
+          d += ` L ${x1s} ${y} L ${x2s} ${y}`;
+        }
+      });
+      parts.push(`<path d="${d}" fill="none" stroke="#22292f" stroke-width="2.5" stroke-linejoin="round"/>`);
+    }
+
+    // Shapes: circles for roughly round/compact objects, rectangles otherwise.
+    shapes.forEach((it) => {
+      const x1s = svgX(Math.max(it.tMin, 0));
+      const x2s = svgX(Math.min(it.tMax, len));
+      const yTop = svgY(it.zMax);
+      const yBot = svgY(it.zMin);
+      const cx = (x1s + x2s) / 2;
+      const cy = (yTop + yBot) / 2;
+      const title = escapeXml(it.name);
+      if (it.isCircle) {
+        const r = Math.max((x2s - x1s) / 2, (yBot - yTop) / 2, 4);
+        parts.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="#fff" stroke="#0063a3" stroke-width="2"><title>${title}</title></circle>`);
+      } else {
+        const w = Math.max(x2s - x1s, 4);
+        const h = Math.max(yBot - yTop, 4);
+        parts.push(`<rect x="${cx - w / 2}" y="${cy - h / 2}" width="${w}" height="${h}" fill="#fff" stroke="#0063a3" stroke-width="2"><title>${title}</title></rect>`);
+      }
+    });
+
+    // Clearance labels between vertically-stacked shapes (by tangent overlap).
+    const clusters = clusterByOverlap(shapes);
+    clusters.forEach((cluster) => {
+      if (cluster.items.length < 2) return;
+      const stack = cluster.items.slice().sort((a, b) => a.zMin - b.zMin);
+      for (let i = 0; i < stack.length - 1; i++) {
+        const lower = stack[i];
+        const upper = stack[i + 1];
+        const gap = upper.zMin - lower.zMax;
+        if (gap <= 0) continue;
+        const cx = svgX((Math.max(lower.tMin, 0) + Math.min(lower.tMax, len)) / 2);
+        const y1s = svgY(lower.zMax);
+        const y2s = svgY(upper.zMin);
+        parts.push(`<line x1="${cx}" y1="${y1s}" x2="${cx}" y2="${y2s}" stroke="#cc1e2c" stroke-width="1.5" stroke-dasharray="3,2"/>`);
+        parts.push(`<line x1="${cx - 5}" y1="${y1s}" x2="${cx + 5}" y2="${y1s}" stroke="#cc1e2c" stroke-width="1.5"/>`);
+        parts.push(`<line x1="${cx - 5}" y1="${y2s}" x2="${cx + 5}" y2="${y2s}" stroke="#cc1e2c" stroke-width="1.5"/>`);
+        const midY = (y1s + y2s) / 2;
+        const label = `${Math.round(gap)} mm`;
+        const labelW = label.length * 6.2 + 8;
+        parts.push(`<rect x="${cx + 6}" y="${midY - 8}" width="${labelW}" height="16" fill="#fff" stroke="#cc1e2c" stroke-width="1" rx="2"/>`);
+        parts.push(`<text x="${cx + 10}" y="${midY + 4}" font-size="11" fill="#cc1e2c" font-weight="600">${label}</text>`);
+      }
+    });
+
+    parts.push("</svg>");
+    return parts.join("");
+  }
+
+  async function drawSectionGraph() {
     if (!API) return;
     if (!lastLine) {
       setStatus("Create a section first.", true);
       return;
     }
-    els.markupClearanceBtn.disabled = true;
+    els.drawGraphBtn.disabled = true;
     setStatus("Scanning objects in the section slice\u2026 this can take a moment on large models.");
     try {
-      const { x1, y1, x2, y2 } = lastLine;
-      const dx = x2 - x1;
-      const dy = y2 - y1;
-      const len = Math.sqrt(dx * dx + dy * dy);
-      if (!len) {
-        setStatus("Invalid section line.", true);
+      const { items, len } = await scanObjectsInSlice();
+      if (!items.length) {
+        setStatus("No objects found in the current section slice.", true);
+        els.sectionGraphWrap.style.display = "none";
         return;
       }
-      const nx = -dy / len; // normal (thickness axis)
-      const ny = dx / len;
-      const tx = dx / len; // tangent (length axis, along the line)
-      const ty = dy / len;
-      const midX = (x1 + x2) / 2;
-      const midY = (y1 + y2) / 2;
-      const thickness = Math.max(Number(els.thickness.value) || 10, 1);
-      const halfThickness = thickness / 2;
-      const halfLength = len / 2;
-
-      const modelObjectSets = await API.viewer.getObjects();
-      if (!modelObjectSets || !modelObjectSets.length) {
-        setStatus("No loaded model objects found.", true);
-        return;
-      }
-
-      const inSlice = [];
-      for (const mo of modelObjectSets) {
-        const ids = (mo.objects || []).map((o) => o.id).filter((id) => typeof id === "number");
-        if (!ids.length) continue;
-
-        const chunkSize = 1000;
-        for (let i = 0; i < ids.length; i += chunkSize) {
-          const chunk = ids.slice(i, i + chunkSize);
-          let boxes;
-          try {
-            boxes = await API.viewer.getObjectBoundingBoxes(mo.modelId, chunk);
-          } catch (err) {
-            console.error(err);
-            continue;
-          }
-          for (const b of boxes || []) {
-            if (!b || !b.boundingBox) continue;
-            const { min, max } = b.boundingBox;
-            if (!min || !max) continue;
-
-            // Project all 4 horizontal corners onto the box's normal and
-            // tangent axes to test overlap with the (rotated) clip box.
-            let nMin = Infinity;
-            let nMax = -Infinity;
-            let tMin = Infinity;
-            let tMax = -Infinity;
-            for (const cx of [min.x, max.x]) {
-              for (const cy of [min.y, max.y]) {
-                const rx = cx - midX;
-                const ry = cy - midY;
-                const pn = rx * nx + ry * ny;
-                const pt = rx * tx + ry * ty;
-                if (pn < nMin) nMin = pn;
-                if (pn > nMax) nMax = pn;
-                if (pt < tMin) tMin = pt;
-                if (pt > tMax) tMax = pt;
-              }
-            }
-
-            const intersectsNormal = nMax >= -halfThickness && nMin <= halfThickness;
-            const intersectsTangent = tMax >= -halfLength && tMin <= halfLength;
-            if (intersectsNormal && intersectsTangent) {
-              inSlice.push({
-                modelId: mo.modelId,
-                id: b.objectRuntimeId,
-                zMin: min.z,
-                zMax: max.z,
-                centerX: (min.x + max.x) / 2,
-                centerY: (min.y + max.y) / 2,
-                tangentMin: tMin,
-                tangentMax: tMax,
-              });
-            }
-          }
-        }
-      }
-
-      if (inSlice.length < 2) {
-        setStatus(
-          inSlice.length === 0
-            ? "No objects found in the current section slice."
-            : "Only one object found in the slice \u2014 nothing to compare.",
-          true
-        );
-        return;
-      }
-
-      // Cluster into vertical "stacks": objects whose footprint overlaps
-      // along the line (tangent axis) are treated as being at the same
-      // point along the section, and therefore comparable in Z.
-      inSlice.sort((a, b) => a.tangentMin - b.tangentMin);
-      const clusters = [];
-      for (const item of inSlice) {
-        let placed = false;
-        for (const cluster of clusters) {
-          if (item.tangentMin <= cluster.tangentMax) {
-            cluster.items.push(item);
-            cluster.tangentMax = Math.max(cluster.tangentMax, item.tangentMax);
-            placed = true;
-            break;
-          }
-        }
-        if (!placed) {
-          clusters.push({ tangentMax: item.tangentMax, items: [item] });
-        }
-      }
-
-      // Fetch names in bulk, grouped per model.
-      const idsByModel = {};
-      inSlice.forEach((it) => {
-        (idsByModel[it.modelId] = idsByModel[it.modelId] || []).push(it.id);
-      });
-      const namesByModelId = {};
-      for (const modelId of Object.keys(idsByModel)) {
-        namesByModelId[modelId] = await fetchObjectNames(modelId, idsByModel[modelId]);
-      }
-      inSlice.forEach((it) => {
-        it.name = (namesByModelId[it.modelId] && namesByModelId[it.modelId][it.id]) || `Object ${it.id}`;
-      });
-
-      if (clearanceMarkupIds.length) {
-        await API.markup.removeMarkups(clearanceMarkupIds).catch(() => {});
-        clearanceMarkupIds = [];
-      }
-
-      const measurements = [];
-      const resultLines = [];
-      let stackIndex = 0;
-      for (const cluster of clusters) {
-        if (cluster.items.length < 2) continue;
-        stackIndex += 1;
-        const stack = cluster.items.slice().sort((a, b) => a.zMin - b.zMin);
-        for (let i = 0; i < stack.length - 1; i++) {
-          const lower = stack[i];
-          const upper = stack[i + 1];
-          const gap = upper.zMin - lower.zMax;
-          if (gap > 0) {
-            const point = { positionX: lower.centerX, positionY: lower.centerY };
-            measurements.push({
-              start: { ...point, positionZ: lower.zMax },
-              end: { ...point, positionZ: upper.zMin },
-              mainLineStart: { ...point, positionZ: lower.zMax },
-              mainLineEnd: { ...point, positionZ: upper.zMin },
-            });
-            resultLines.push(`[${stackIndex}] ${lower.name} \u2192 ${upper.name}: ${Math.round(gap)} mm`);
-          } else {
-            resultLines.push(`[${stackIndex}] ${lower.name} \u2192 ${upper.name}: overlapping`);
-          }
-        }
-      }
-
-      if (measurements.length) {
-        const added = await API.markup.addMeasurementMarkups(measurements);
-        clearanceMarkupIds = (added || []).map((m) => m.id).filter((id) => typeof id === "number");
-      }
-
-      els.clearanceResults.textContent = resultLines.length
-        ? resultLines.join("\n")
-        : "No vertically stacked objects found in the slice.";
-      setStatus(
-        measurements.length
-          ? `Marked up ${measurements.length} clearance${measurements.length === 1 ? "" : "s"}.`
-          : "No positive clearances found in the slice.",
-        !measurements.length
-      );
+      const svg = buildSectionSvg(items, len);
+      els.sectionGraphContainer.innerHTML = svg;
+      els.sectionGraphWrap.style.display = "";
+      setStatus(`Diagram drawn from ${items.length} object${items.length === 1 ? "" : "s"} in the slice.`);
     } catch (err) {
       console.error(err);
-      setStatus("Failed to detect clearances.", true);
+      setStatus("Failed to draw the 2D section diagram.", true);
     } finally {
-      els.markupClearanceBtn.disabled = false;
-    }
-  }
-
-  async function clearClearances() {
-    if (!API) return;
-    try {
-      if (clearanceMarkupIds.length) {
-        await API.markup.removeMarkups(clearanceMarkupIds);
-      }
-      clearanceMarkupIds = [];
-      els.clearanceResults.textContent = "";
-      setStatus("Clearance markups cleared.");
-    } catch (err) {
-      console.error(err);
-      setStatus("Failed to clear clearance markups.", true);
+      els.drawGraphBtn.disabled = false;
     }
   }
 
@@ -725,8 +782,7 @@
     els.sectionViewBtn.addEventListener("click", goToSectionView);
     els.captureSplitBtn.addEventListener("click", captureSplitView);
 
-    els.markupClearanceBtn.addEventListener("click", markupClearances);
-    els.clearClearanceBtn.addEventListener("click", clearClearances);
+    els.drawGraphBtn.addEventListener("click", drawSectionGraph);
 
     els.alignmentSelect.addEventListener("change", () => setActiveAlignment(els.alignmentSelect.value));
 
@@ -826,6 +882,7 @@
         lastLine = null;
         preDrawMarkupIds = new Set();
         els.splitPreview.style.display = "none";
+        els.sectionGraphWrap.style.display = "none";
         setStatus("Section cleared.");
       } catch (err) {
         console.error(err);
